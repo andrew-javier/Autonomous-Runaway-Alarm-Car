@@ -55,7 +55,7 @@
  *        In either case, you should avoid using this bus or interfacing to external components because
  *        there is no semaphore configured for this bus and it should be used exclusively by nordic wireless.
  */
-
+bool startup = 0;
 typedef enum {
 shared_TimerQueueId,
 } sharedHandle_t;
@@ -68,20 +68,17 @@ public:
 	bool run(void *p) {
 		while(1){
 			int timer;
-			//timer = timer + 1;
-			if (LPC_GPIO1->FIOPIN & (1 << 10)){
+			if (LPC_GPIO1->FIOPIN & (1 << 10)){ //P1[9] SW0
 				timer = 0;
 			}
-			else if (LPC_GPIO1->FIOPIN & (1 << 9)){
+			else if (LPC_GPIO1->FIOPIN & (1 << 9)){ //P1[10] SW1
 				timer = timer + 60;
 			}
-			else if (LPC_GPIO1->FIOPIN & (1<<14)){
+			else if (LPC_GPIO1->FIOPIN & (1<<14)){ //P1[14] SW2
 				xQueueSend(getSharedObject(shared_TimerQueueId), &timer, 1000);
 				vTaskSuspend(0);
 			}
-			if(SW.getSwitch(4)) {
-				vTaskSuspend(0);
-			}
+
 			LD.setNumber(timer/60);
 			vTaskDelay(250);
 		}
@@ -105,10 +102,11 @@ public:
 	}
 	bool run(void *p) {
 		while(1){
+		bool send;
 		QueueHandle_t qid = getSharedObject(shared_TimerQueueId);
 		int count;
-		xQueueReceive(qid, &count, portMAX_DELAY);
-		while (count >= 0){
+		send = xQueueReceive(qid, &count, 0);
+		while (count >= -1 && send){
 			if (count > 60){
 				LD.setNumber((count/60) - 1);
 			}
@@ -146,11 +144,15 @@ public:
 				LPC_GPIO1->FIOCLR=(1<<4);
 				LPC_GPIO1->FIOCLR=(1<<8);
 			}
-			if(SW.getSwitch(4)) {
+			if(count == 0 && send) {
+				puts("Alarm is off and alarm task will be suspended");
+				startup = 1;
 				vTaskSuspend(0);
+
 			}
 			count = count - 1;
 			vTaskDelay(1000);
+			printf("Clock is %i \n", count);
 
 		}
 		}
@@ -187,11 +189,13 @@ public:
 	bool run(void *p) {
 		while (1) {
 			int dist_sensor1 = adc0_get_reading(3); // Read the value of ADC-3
+			if (startup){
 			xQueueSend(getSharedObject(shared_SensorQueueId), &dist_sensor1,
 					portMAX_DELAY);
+			}
 			puts("IR_Sensor 1 is sent");
 			printf("IR_Sensor 1 Value is %i\n", dist_sensor1);
-			vTaskDelay(100);
+			vTaskDelay(200);
 			if(SW.getSwitch(4)) {
 				vTaskSuspend(0);
 			}
@@ -215,11 +219,13 @@ public:
 	bool run(void *p) {
 		while (1) {
 			int dist_sensor2 = adc0_get_reading(5); // Read the value of ADC-5
+			if (startup){
 			xQueueSend(getSharedObject(shared_SensorQueueId), &dist_sensor2,
 					portMAX_DELAY);
+			}
 			puts("IR Sensor 2 data is sent");
 			printf("IR_Sensor 2 is %i\n", dist_sensor2);
-			vTaskDelay(100);
+			vTaskDelay(200);
 			if(SW.getSwitch(4)) {
 				vTaskSuspend(0);
 			}
@@ -231,7 +237,8 @@ public:
 
 class buzzer: public scheduler_task {
 public:
-	buzzer(uint8_t priority) : scheduler_task("buzzer",2048, priority) {
+	buzzer(uint8_t priority) :
+			scheduler_task("buzzer", 2048, priority) {
 	}
 	bool init(void) {
 		LPC_PINCON->PINSEL4 &= ~(3 << 10);
@@ -239,13 +246,16 @@ public:
 		return true;
 	}
 	bool run(void *p) {
-		if(SW.getSwitch(4)) {
-			vTaskSuspend(0);
-		}
-		init();
 		PWM buzzer1(PWM::pwm6, 5000); //PWM6 = PWM1-6 which is located in P2[5]
-		buzzer1.set(50);
-		vTaskDelay(250);
+		if (startup) {					//Once the timer goes off, it will start ringing but once the button 4 is pressed, the buzzer will be off and task will end.
+			if (SW.getSwitch(4)) {
+				buzzer1.set(0);
+				vTaskSuspend(0);
+			}
+			init();
+			buzzer1.set(50);
+			vTaskDelay(200);
+		}
 		return true;
 	}
 };
@@ -313,10 +323,10 @@ public:
 		PWM motor3(PWM::pwm3, 1000);		//Left Side
 		PWM motor2(PWM::pwm5, 1000);//PWM5 = PWM1-5 which is located in P2[4]
 		PWM motor4(PWM::pwm5, 1000);		//Right side
-		motor1.set(50);
-		motor2.set(50);
-		motor3.set(50);
-		motor4.set(50);
+		motor1.set(75);
+		motor2.set(75);
+		motor3.set(75);
+		motor4.set(75);
 	}
 	/*
 	 * IN1 = 5V, IN2 = GND (Forward)
@@ -331,10 +341,10 @@ public:
 		PWM motor3(PWM::pwm3, 1000);		//Left Side
 		PWM motor2(PWM::pwm5, 1000);//PWM5 = PWM1-5 which is located in P2[4]
 		PWM motor4(PWM::pwm5, 1000);		//Right side
-		motor1.set(50);
-		motor2.set(50);
-		motor3.set(50);
-		motor4.set(50);
+		motor1.set(75);
+		motor2.set(75);
+		motor3.set(75);
+		motor4.set(75);
 	}
 
 
@@ -344,13 +354,11 @@ public:
 
 		int distance1 = adc0_get_reading(3); // Read the value of ADC-3
 		int distance2 = adc0_get_reading(5);// Read the value of ADC-5
-		if(SW.getSwitch(4)) {
-			vTaskSuspend(0);
-		}
 
-		QueueHandle_t IR_getData = getSharedObject(shared_SensorQueueId);
-		if (xQueueReceive(IR_getData, &distance1,
-				portMAX_DELAY) && xQueueReceive(IR_getData, &distance2, portMAX_DELAY)) {
+		QueueHandle_t IR_getData1 = getSharedObject(shared_SensorQueueId);
+		QueueHandle_t IR_getData2 = getSharedObject(shared_SensorQueueId);
+		if (xQueueReceive(IR_getData1, &distance1,
+				portMAX_DELAY) && xQueueReceive(IR_getData2, &distance2, portMAX_DELAY)) {
 			puts("Received the IR_Data for both sensors \n");
 			if (distance1 > 900 || distance2 > 900) //sensor 1 = Left IR Sensor  sensor 2 = Right IR Sensor
 			{	//sensor 1 and sensor 2
@@ -366,10 +374,12 @@ public:
 				puts("Moving forward");
 			}
 		}
+/*
 		else {
 			move_forward();
 			puts("IR is not detecting any obstacles within its range");
 		}
+*/
 		return true;
 	}
 };
@@ -384,12 +394,12 @@ int main(void)
     //scheduler_add_task(new consumer_task(PRIORITY_MEDIUM));
     //scheduler_add_task(new producer_task(PRIORITY_MEDIUM));
    // scheduler_add_task(new watchdog_task(PRIORITY_HIGH));
-	//scheduler_add_task(new timerset(PRIORITY_HIGH));
-	//scheduler_add_task(new countdown(PRIORITY_HIGH));
-	//scheduler_add_task(new buzzer(PRIORITY_MEDIUM));
-    scheduler_add_task(new IR_sensor1(PRIORITY_MEDIUM));
-    scheduler_add_task(new IR_sensor2(PRIORITY_MEDIUM));
-    scheduler_add_task(new state_machineTask(PRIORITY_MEDIUM));
+	scheduler_add_task(new timerset(PRIORITY_HIGH));
+	scheduler_add_task(new countdown(PRIORITY_MEDIUM));
+	scheduler_add_task(new buzzer(PRIORITY_LOW));
+    scheduler_add_task(new IR_sensor1(PRIORITY_LOW));
+    scheduler_add_task(new IR_sensor2(PRIORITY_LOW));
+    scheduler_add_task(new state_machineTask(PRIORITY_LOW));
     //scheduler_add_task(new spi_task(PRIORITY_HIGH));
     //scheduler_add_task(new EINT_task(PRIORITY_HIGH));
    // scheduler_add_task(new UART_task(PRIORITY_HIGH));
